@@ -3,7 +3,8 @@ Please write simple description of your part so I can create the overview and co
 https://docs.google.com/document/d/1az5H0Pi9jA3rXqkfopbbeTGD6ghsxjKuj-Lz2obhzMg/edit
 
 # Temperature and Humidity Sensor
-This module receives temperature and humidity data from the DHT11 sensor using the Arduino library DHT11. The temperature units are in Celsius and humidity is recorded by percentage.
+**Components:** DHT11 Temperature and Humidity Module, 10k resistor
+**Description:** This module receives temperature and humidity data from the DHT11 sensor using the Arduino library DHT11. The temperature units are in Celsius and humidity is recorded by percentage.
 
 # DC Motor & Fan Blade
 **Components:** 3-6 V DC Motor, Fan Blade, L293D IC, Power Supply Module, 9V1A adapter
