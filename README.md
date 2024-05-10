@@ -16,3 +16,7 @@ Used a power supply module with input voltage of 6.5-9v (DC) via 5.5mm x 2.1mm p
 **Spec Sheets:**
 Mega 2560 Arduino Board Pinout - https://docs.arduino.cc/resources/pinouts/A000067-full-pinout.pdf
 , L293D IC - https://www.ti.com/product/L293D
+
+**LCD**
+https://arduinogetstarted.com/tutorials/arduino-lcd
+https://www.datasheethub.com/arduino-water-level-sensor/
