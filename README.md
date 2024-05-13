@@ -9,7 +9,7 @@ https://docs.google.com/document/d/1az5H0Pi9jA3rXqkfopbbeTGD6ghsxjKuj-Lz2obhzMg/
 https://www.youtube.com/watch?v=ISBr5qwto-Q
 
 ## Picture
-![Circuit Photo](circuit.png)
+![Circuit Photo](circuit.jpg)
 
 ## Schematic
 ![Schematic](schematic.png)
