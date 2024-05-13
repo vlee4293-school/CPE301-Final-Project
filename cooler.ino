@@ -1,16 +1,11 @@
-#include <DHT11.h>
 #include <RTClib.h>
 #include <Stepper.h>
-#include <Wire.h>
+#include <DHT11.h>
 #include <LiquidCrystal.h>
 
+#define RDA 0x80
+#define TBE 0x20  
 
-// LCD
-LiquidCrystal lcd(35, 33, 31, 29, 27, 25);
-
-// Temperature, humidity sensor
-#define DHTPIN 7
-DHT11 dht11(DHTPIN);
 
 // ADC
 volatile unsigned char* my_ADMUX = (unsigned char*) 0x7C;
@@ -18,90 +13,81 @@ volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
 volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
 volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
 
-// Port H - Stepper motor
-const int stepsPerRevolution = 2038;
-Stepper myStepper = Stepper(stepsPerRevolution, 40, 42, 44, 46);
-volatile unsigned char* DDRH_REG = (volatile unsigned char*) 0x101;
-volatile unsigned char* PORTH_REG = (volatile unsigned char*) 0x102;
+// Define UART Registers
+volatile unsigned char *myUCSR0A = (unsigned char *)0x00C0;
+volatile unsigned char *myUCSR0B = (unsigned char *)0x00C1;
+volatile unsigned char *myUCSR0C = (unsigned char *)0x00C2;
+volatile unsigned int  *myUBRR0  = (unsigned int *) 0x00C4;
+volatile unsigned char *myUDR0   = (unsigned char *)0x00C6;
 
-// Port E - Start, Stop button Port
-volatile unsigned char* DDRE_REG = (volatile unsigned char*) 0x0D;
-volatile unsigned char* PORTE_REG = (volatile unsigned char*) 0x0E;
+// Define Port E Register Pointers
+volatile unsigned char* port_e = (unsigned char*) 0x2E; 
+volatile unsigned char* ddr_e  = (unsigned char*) 0x2D; 
+volatile unsigned char* pin_e  = (unsigned char*) 0x2C;
 
-// Port B - LED Ports
-volatile unsigned char *DDRB_REG = (volatile unsigned char*)0x24;
-volatile unsigned char *PORTB_REG = (volatile unsigned char*)0x25;
+// Define Port A Register Pointers
+volatile unsigned char* port_a = (unsigned char*) 0x22; 
+volatile unsigned char* ddr_a  = (unsigned char*) 0x21; 
+volatile unsigned char* pin_a  = (unsigned char*) 0x20;  
 
-// USART Registers
-#define TBE 0x20
-volatile unsigned char *_UCSR0A = (unsigned char *)0x00C0; // USART control status registers
-volatile unsigned char *_UCSR0B = (unsigned char *)0x00C1;
-volatile unsigned char *_UCSR0C = (unsigned char *)0x00C2;
-volatile unsigned int *_UBRR0 = (unsigned int *)0x00C4;
-volatile unsigned char *_UDR0 = (unsigned char *)0x00C6; // USART buffer
+// Port L - Stepper motor
+const int stepsPerRevolution = 2000;
+Stepper myStepper = Stepper(stepsPerRevolution, 46, 47, 48, 49);
+volatile unsigned char* port_l = (unsigned char*) 0x10B;
+volatile unsigned char* ddr_l = (unsigned char*) 0x10A;
+volatile unsigned char* pin_l = (unsigned char*) 0x109;
+
+enum States : byte {NOTHING, DISABLED, IDLE, ERROR, RUNNING} C_STATE, P_STATE;
+
+// LCD
+LiquidCrystal lcd(33, 31, 29, 27, 25, 23);
 
 // Realtime Clock
 RTC_DS1307 rtc;
 
-// State flag declaration
-enum states{DISABLED, IDLE, ERROR, RUNNING};
-volatile enum states coolerState;
-volatile bool stateChanged = 0;
+// DHT11 Sensor
+DHT11 dht11(7);
+volatile int TEMP;
+volatile int HUMID;
 
-// Fan flag
-volatile bool fanOn = false;
+// DELAY
+const int PERIOD = 1000;
+volatile unsigned long time_now = 0;
 
-// vent flag
-volatile bool ventAngleIncreased = 0;
+// Vent Angle
+volatile int VENT_ANGLE = 0;
 
-// water level flag
-volatile bool waterLevelCritical = 0;
-
-// function prototypes
-void disabledState();
-void idleState();
-void errorState();
-void runningState();
-void transitionTo(enum states nextState);
-void printStatus();
-int get_temp_and_humidity(int* temp, int* humidity);
-void setFan(bool on);
-void setLED(const bool Y, const bool G, const bool R, const bool B);
-void ventAngle(bool direction);
-void startStopInterrupt();
-void printTime();
-void U0init(unsigned long U0baud);
-void printToSerial(char message[], int size);
-void U0putchar(unsigned char U0pdata);
+// Thresholds
+const int W_THRESHOLD = 50;
+const int T_THRESHOLD = 10;
 
 void setup() {
+  // FAN MOTOR
+  set_ddr(ddr_e, 3, OUTPUT);
+  set_ddr(ddr_e, 5, OUTPUT);
+  
+  // LEDS
+  set_ddr(ddr_a, 0, OUTPUT);
+  set_ddr(ddr_a, 2, OUTPUT);
+  set_ddr(ddr_a, 4, OUTPUT);
+  set_ddr(ddr_a, 6, OUTPUT);
+
+  // VENT
+  set_ddr(ddr_l, 4, INPUT);
+  set_ddr(ddr_l, 5, INPUT);
+
+  // RESET
+  set_ddr(ddr_l, 7, INPUT);
+  
+  // START/STOP
+  attachInterrupt(digitalPinToInterrupt(2), toggle, RISING);
 
   adc_init();
-
+  U0init(9600);
   lcd.begin(16, 2);
 
-  coolerState = IDLE;
-
-  // Initialize UART for Serial Out
-  U0init(9600);
-
-  //PH5 - PH6 in OUTPUT mode
-  *DDRH_REG |= (0x1 << 5); // pin D8
-  *DDRH_REG |= (0x1 << 6); // pin D9
-
-  //PB4 - PB7 in OUTPUT mode
-  *DDRB_REG |= (0x1 << 4);
-  *DDRB_REG |= (0x1 << 5);
-  *DDRB_REG |= (0x1 << 6);
-  *DDRB_REG |= (0x1 << 7);
-
-  // Start, Stop interrupt initializer
-  //*DDRE_REG |= (0x0 << 4); // Pin D2 (Port E4) to INPUT mode
-  attachInterrupt(digitalPinToInterrupt(2), startStopInterrupt, RISING);
-  attachInterrupt(digitalPinToInterrupt(3), changeVentAngle, RISING);
-
-  // vent buttons - INPUT mode
-  *DDRE_REG &= ~(0x1 << 3); // D3
+  C_STATE = DISABLED;
+  P_STATE = NOTHING;
 
   // Real Time Clock
   if (! rtc.begin()) {
@@ -116,319 +102,281 @@ void setup() {
     // January 21, 2014 at 3am you would call:
     // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
   }
-
 }
 
 void loop() {
-
-  int waterLevel = adc_read(0);
-
-  if (waterLevel == 0){
-
-    waterLevelCritical = 1;
-
-  } else if (waterLevel > 0){
-
-    waterLevelCritical = 0;
-
-  }
-
-
-  int temperature = 0;
-  int humidity = 0;
-  if (coolerState != DISABLED){
-
-    // Report Humidity, Temperature
-    int result = get_temp_and_humidity(&temperature, &humidity);
-
-    // Output to LCD
-    if (result == 0) {
-
-      char message1[16];
-      char message2[16];
-      
-      lcd.setCursor(0, 0);
-      sprintf(message1, "Temp = %d C", temperature);
-      lcd.print(message1);
-
-      lcd.setCursor(0, 1);
-      sprintf(message2, "RH = %d %%", humidity);
-      lcd.print(message2);
-      
-    }
-
-  }
-
-  // Handle Vent Angle change
-  if (ventAngleIncreased == 1){
-
-    ventAngle(0);
-    ventAngleIncreased = 0;
-
-  }
-
-  // Fan
-  setFan(fanOn);
-
-  // State
-  if (stateChanged) {
-
-    printStatus();
-    stateChanged = 0;
-
-  }
-
-  switch(coolerState){
-
+  switch (C_STATE) {
     case DISABLED:
-      disabledState();
+      disabled();
       break;
-
     case IDLE:
-      idleState(temperature);
+      idle();
       break;
-
     case ERROR:
-      errorState();
+      error();
       break;
-
     case RUNNING:
-      runningState(temperature, humidity);
+      running();
       break;
+  }
+}
 
-    default:
-      transitionTo(ERROR);
+//GPIO
+void set_ddr(unsigned char* ddr, unsigned char pin_num, unsigned char direction) {
+  if (direction == INPUT)
+    *ddr &= ~(0x01 << pin_num);
+  else if (direction == OUTPUT)
+    *ddr |= 0x01 << pin_num;
+}
+
+void write_port(unsigned char* port, unsigned char pin_num, unsigned char state) {
+  if(state == LOW)
+    *port &= ~(0x01 << pin_num);
+  else if (state == HIGH)
+    *port |= 0x01 << pin_num;
+}
+
+unsigned char read_pin(unsigned char* pin, unsigned char pin_num) {
+  return (*pin & (0x01 << pin_num)) > LOW;
+}
+
+//States
+void disabled() {
+  if (P_STATE != C_STATE) {
+    P_STATE = C_STATE;
+    lcd.clear();
+
+    // Solo Yellow LED
+    write_port(port_a, 0, HIGH);
+    write_port(port_a, 2, LOW);
+    write_port(port_a, 4, LOW);
+    write_port(port_a, 6, LOW);
+
+    // FAN
+    write_port(port_e, 3, LOW);
+    write_port(port_e, 5, LOW);
+
+    status();
   }
 
+  adjust_vent();
 }
 
-void disabledState(){
+void idle() {
+  if (P_STATE != C_STATE) {
+    P_STATE = C_STATE;
+    lcd.clear();  
 
-  // Fan off
-  fanOn = false;
+    // Solo Green LED
+    write_port(port_a, 0, LOW);
+    write_port(port_a, 2, HIGH);
+    write_port(port_a, 4, LOW);
+    write_port(port_a, 6, LOW);
 
-  // Yellow LED ON
-  setLED(1, 0, 0, 0);
+    // FAN
+    write_port(port_e, 3, LOW);
+    write_port(port_e, 5, LOW);
 
-}
-
-void idleState(int temperature){
-
-  // Green LED ON
-  setLED(0, 1, 0, 0);
-
-  // Monitor water level
-  if (waterLevelCritical) {
-
-    transitionTo(ERROR);
-
-  } else if (temperature > 20) {
-
-    transitionTo(RUNNING);
-
+    status();
   }
 
-}
+  adjust_vent();
 
-void errorState(){
-
-  // Turn off Fan
-  fanOn = false;
-
-  // Display Error to LCD
-  lcd.clear();
-  lcd.setCursor(0,0);
-  lcd.print("ERROR");
-
-  // Red LED ON
-  setLED(0, 0, 1, 0);
-
-}
-
-void runningState(int temperature, int humidity){
-
-  // Run Cooler
-  fanOn = true;
-
-  // blue LED on
-  setLED(0, 0, 0, 1);
-
-  // Check water level
-  bool waterLevelCritical = false;
-
-  if (waterLevelCritical) {
-
-    transitionTo(ERROR);
-
-  }
-
-}
-
-void transitionTo(enum states nextState){
+  get_temp_and_humidity(&TEMP, &HUMID);
   
-  // Change state flag
-  coolerState = nextState;
-  stateChanged = 1;
+  lcd.setCursor(0, 0);
+  char buf[17];
+  snprintf(buf, 17, "TEMP: %d C", TEMP);
+  lcd.print(buf);
 
-  printStatus();
+  lcd.setCursor(0, 1);
+  snprintf(buf, 17, "RH: %d %%", HUMID);
+  lcd.print(buf);
 
+  if (TEMP > T_THRESHOLD)
+    C_STATE = RUNNING;
+
+  if (adc_read(0) > W_THRESHOLD) return;
+
+  C_STATE = ERROR;
 }
 
-void printStatus(){
+void error() {
+  if (P_STATE != C_STATE) {
+    P_STATE = C_STATE;
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("ERROR");
 
-  char nextStateString[9];
+    // Solo Red LED
+    write_port(port_a, 0, LOW);
+    write_port(port_a, 2, LOW);
+    write_port(port_a, 4, HIGH);
+    write_port(port_a, 6, LOW);
 
-  switch(coolerState){
+    // FAN
+    write_port(port_e, 3, LOW);
+    write_port(port_e, 5, LOW);
 
-      case DISABLED:
-        strcpy(nextStateString, "DISABLED"); 
-        break;
-
-      case IDLE:
-        strcpy(nextStateString, "IDLE");
-        break;
-
-      case ERROR:
-        strcpy(nextStateString, "ERROR");
-        break;
-
-      case RUNNING:
-        strcpy(nextStateString, "RUNNING");
-        break;
+    status();
   }
 
-  char message[50]; // Increase the size of message array to accommodate the string
-  // Use snprintf to format the string and store it in message array
-  int messageLength = snprintf(message, sizeof(message), "State: %s", nextStateString);
-  printToSerial(message, messageLength);
-
-  // Report Timestamp
-  printTime();
-
-  // Report vent angle
-  messageLength = snprintf(message, sizeof(message), "Vent Angle Increased: %d", ventAngleIncreased);
-  printToSerial(message, messageLength);
-  ventAngleIncreased = 0;
-
+  reset();
 }
 
-int get_temp_and_humidity(int* temp, int* humidity) {
-  return dht11.readTemperatureHumidity(*temp, *humidity);
-}
+void running() {
+  if (P_STATE != C_STATE) {
+    P_STATE = C_STATE;
+    lcd.clear();
 
-void setFan(bool on){
+    // Solo Blue LED
+    write_port(port_a, 0, LOW);
+    write_port(port_a, 2, LOW);
+    write_port(port_a, 4, LOW);
+    write_port(port_a, 6, HIGH);
 
-  if(on){
+    // FAN
+    write_port(port_e, 3, HIGH);
+    write_port(port_e, 5, HIGH);
 
-    *PORTH_REG |= (1 << 5);  //set pin 8
-    *PORTH_REG &= ~(1 << 6); //clear pin 9
-
-
-  } else {
-
-    *PORTH_REG &= ~(1 << 5); //clear pin 5
-    *PORTH_REG &= ~(1 << 6); //clear pin 6
-
+    status();
   }
 
+  adjust_vent();
+
+  get_temp_and_humidity(&TEMP, &HUMID);
+
+  lcd.setCursor(0, 0);
+  char buf[17];
+  snprintf(buf, 17, "TEMP: %d C", TEMP);
+  lcd.print(buf);
+
+  lcd.setCursor(0, 1);
+  snprintf(buf, 17, "RH: %d %%", HUMID);
+  lcd.print(buf);
+
+  if (TEMP <= T_THRESHOLD)
+    C_STATE = IDLE;
+
+  if (adc_read(0) > W_THRESHOLD) return;
+
+  C_STATE = ERROR;
 }
 
-void setLED(const bool Y, const bool G, const bool R, const bool B){
+// Vent Control
+void adjust_vent() {
+  myStepper.setSpeed(10);
 
-  *PORTB_REG &= ((Y == 1 ? 0x1 : 0x0) << 7);
-  *PORTB_REG &= ((G == 1 ? 0x1 : 0x0) << 6);
-  *PORTB_REG &= ((R == 1 ? 0x1 : 0x0) << 5);
-  *PORTB_REG &= ((B == 1 ? 0x1 : 0x0) << 4);
-
-  *PORTB_REG |= (Y == 1 ? 0x1 : 0x0) << 7;
-  *PORTB_REG |= (G == 1 ? 0x1 : 0x0) << 6;
-  *PORTB_REG |= (R == 1 ? 0x1 : 0x0) << 5;
-  *PORTB_REG |= (B == 1 ? 0x1 : 0x0) << 4;
-
-}
-
-void ventAngle(bool direction){
-
-  const int stepsPerRevolution = 2038;  // Defines the number of steps per rotation
-  // Creates an instance of stepper class
-  // Pins entered in sequence IN1-IN3-IN2-IN4 for proper step sequence
-
-  myStepper.setSpeed(5);
-
-  if(direction){
-
+  if (read_pin(pin_l, 4) && !(read_pin(pin_l, 5))) {
     myStepper.step(stepsPerRevolution/4);
-    ventAngleIncreased = 1;
-
-  } else if (!direction){
-
-    myStepper.step(-1*stepsPerRevolution/4);
-    ventAngleIncreased = 0;
-
+    VENT_ANGLE = (VENT_ANGLE + 90) % 360;
+    status();
   }
-
+  else if (!(read_pin(pin_l, 4)) && read_pin(pin_l, 5)) {
+    myStepper.step(-stepsPerRevolution/4);
+    VENT_ANGLE = (VENT_ANGLE - 90) % 360;
+    status();
+  }
 }
 
-void changeVentAngle(){
-
-  ventAngleIncreased = 1;
-
+//Monitoring
+void status() {
+  print_state();
+  print_time();
+  print_angle();
 }
 
-void startStopInterrupt(){
-  
-  coolerState = (coolerState == DISABLED ? IDLE : DISABLED);
-  stateChanged = 1;
-
+void print_state() {
+  print_string("State: ");
+  switch (C_STATE) {
+    case DISABLED:
+      print_stringln("DISABLED");
+      break;
+    case IDLE:
+      print_stringln("IDLE");
+      break;
+    case ERROR:
+      print_stringln("ERROR");
+      break;
+    case RUNNING:
+      print_stringln("RUNNING");
+      break;
+  }
 }
 
-void printTime(){
+void print_time() {
+  DateTime now = rtc.now();
+  char buf[20];
 
-   DateTime now = rtc.now();
-
-  int hour = now.hour();
-  int min = now.minute();
-  int sec = now.second();
-
-  unsigned char timeString[16];
-  sprintf(timeString, "Time: %d:%d:%d", hour, min, sec);
-  printToSerial(timeString, 16);
-
+  snprintf(buf, 20, "Time: %d:%d:%d", now.hour(), now.minute(), now.second());
+  print_stringln(buf);
 }
 
+void print_angle() {
+  char buf[20];
+  snprintf(buf, 20, "Vent Angle: %d deg", VENT_ANGLE);
+  print_stringln(buf);
+}
+
+void get_temp_and_humidity(int* temp, int* humidity) {
+  if (millis() >= time_now + PERIOD) {
+    time_now += PERIOD;
+    dht11.readTemperatureHumidity(*temp, *humidity);
+  }
+}
+
+// Reset
+void reset() {
+  if (adc_read(0) > W_THRESHOLD && read_pin(pin_l, 7)) {
+    C_STATE = IDLE;
+  }
+}
+
+//ISR
+void toggle() {
+  C_STATE = (C_STATE != DISABLED) ? DISABLED : IDLE;
+}
+
+//UART
 void U0init(unsigned long U0baud) {
-
-  unsigned long FCPU = 16000000;
-  unsigned int tbaud;
-  tbaud = (FCPU / 16 / U0baud - 1); //baud rate operation
- 
-  *_UCSR0A = 0x20; // double-speed operation
-  *_UCSR0B = 0x18; // enable transmitter and receiver
-  *_UCSR0C = 0x06; // 8 bit data communication
-  *_UBRR0 = tbaud; // set baud rate
-
+ unsigned long FCPU = 16000000;
+ unsigned int tbaud;
+ tbaud = (FCPU / 16 / U0baud - 1);
+ *myUCSR0A = 0x20;
+ *myUCSR0B = 0x18;
+ *myUCSR0C = 0x06;
+ *myUBRR0  = tbaud;
 }
 
-void printToSerial(char message[], int size){
+unsigned char U0kbhit()
+{
+  return (*myUCSR0A & RDA);
+}
 
-  for (int i = 0; i < size; i++) {
+unsigned char U0getchar()
+{
+  return *myUDR0;
+}
 
-    U0putchar((unsigned char)message[i]);
+void U0putchar(unsigned char U0pdata)
+{
+  while(!(*myUCSR0A & TBE));
+  *myUDR0 = U0pdata;
+}
 
+void print_string(char message[]) {
+  int i = 0;
+  while (message[i] != '\0'){
+    U0putchar((unsigned char) message[i++]);
   }
+}
 
+void print_stringln(char message[]) {
+  print_string(message);
   U0putchar('\n');
-
 }
 
-void U0putchar(unsigned char U0pdata) {
-
-  while (!(*_UCSR0A & TBE)); // Transmitter Buffer Empty
-
-  *_UDR0 = U0pdata; // Put data to buffer
-
-}
-
+//ADC
 void adc_init()
 {
   // setup the A register
@@ -468,4 +416,3 @@ unsigned int adc_read(unsigned char adc_channel_num)
   // return the result in the ADC data register
   return *my_ADC_DATA;
 }
-
