@@ -9,6 +9,7 @@ https://docs.google.com/document/d/1az5H0Pi9jA3rXqkfopbbeTGD6ghsxjKuj-Lz2obhzMg/
 https://www.youtube.com/watch?v=ISBr5qwto-Q
 
 ## Picture
+![Circuit Photo](circuit.png)
 
 ## Schematic
 ![Schematic](schematic.png)
@@ -45,7 +46,7 @@ https://www.youtube.com/watch?v=ISBr5qwto-Q
 #### Circuit
 - Temperature/Humidity Sensor
 
-##Specification Sheets
+## Specification Sheets
 **DC Motor & Fan Blade**
 - [Mega 2560 Arduino Board Pinout](https://docs.arduino.cc/resources/pinouts/A000067-full-pinout.pdf)
 - [L293D IC](https://www.ti.com/product/L293D)
