@@ -1,3 +1,6 @@
+// Team Members: Harry Sho, Allison Tang, Althea Santos, Vincent Lee
+
+
 #include <RTClib.h>
 #include <Stepper.h>
 #include <DHT11.h>
