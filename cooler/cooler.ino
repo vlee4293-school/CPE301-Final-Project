@@ -6,8 +6,7 @@
 #define RDA 0x80
 #define TBE 0x20  
 
-
-// ADC
+// Define ADC Registers
 volatile unsigned char* my_ADMUX = (unsigned char*) 0x7C;
 volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
 volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
@@ -20,23 +19,24 @@ volatile unsigned char *myUCSR0C = (unsigned char *)0x00C2;
 volatile unsigned int  *myUBRR0  = (unsigned int *) 0x00C4;
 volatile unsigned char *myUDR0   = (unsigned char *)0x00C6;
 
-// Define Port E Register Pointers
+// Define Port E Register Pointers (FAN)
 volatile unsigned char* port_e = (unsigned char*) 0x2E; 
 volatile unsigned char* ddr_e  = (unsigned char*) 0x2D; 
 volatile unsigned char* pin_e  = (unsigned char*) 0x2C;
 
-// Define Port A Register Pointers
+// Define Port A Register Pointers (LEDs)
 volatile unsigned char* port_a = (unsigned char*) 0x22; 
 volatile unsigned char* ddr_a  = (unsigned char*) 0x21; 
 volatile unsigned char* pin_a  = (unsigned char*) 0x20;  
 
-// Port L - Stepper motor
+// Define Port L Register Pointers (Stepper Motor, Vent Control, Reset)
 const int stepsPerRevolution = 2000;
 Stepper myStepper = Stepper(stepsPerRevolution, 46, 47, 48, 49);
 volatile unsigned char* port_l = (unsigned char*) 0x10B;
 volatile unsigned char* ddr_l = (unsigned char*) 0x10A;
 volatile unsigned char* pin_l = (unsigned char*) 0x109;
 
+// Cooler States
 enum States : byte {NOTHING, DISABLED, IDLE, ERROR, RUNNING} C_STATE, P_STATE;
 
 // LCD
@@ -51,7 +51,7 @@ volatile int TEMP;
 volatile int HUMID;
 
 // DELAY
-const int PERIOD = 1000;
+const int PERIOD = 60000;
 volatile unsigned long time_now = 0;
 
 // Vent Angle
@@ -62,6 +62,7 @@ const int W_THRESHOLD = 50;
 const int T_THRESHOLD = 10;
 
 void setup() {
+  
   // FAN MOTOR
   set_ddr(ddr_e, 3, OUTPUT);
   set_ddr(ddr_e, 5, OUTPUT);
@@ -82,10 +83,12 @@ void setup() {
   // START/STOP
   attachInterrupt(digitalPinToInterrupt(2), toggle, RISING);
 
+  // DISPLAY/CONSOLE
   adc_init();
   U0init(9600);
   lcd.begin(16, 2);
 
+  // INITIAL STATES
   C_STATE = DISABLED;
   P_STATE = NOTHING;
 
@@ -140,7 +143,7 @@ unsigned char read_pin(unsigned char* pin, unsigned char pin_num) {
   return (*pin & (0x01 << pin_num)) > LOW;
 }
 
-//States
+//States Logic
 void disabled() {
   if (P_STATE != C_STATE) {
     P_STATE = C_STATE;
@@ -184,6 +187,7 @@ void idle() {
 
   get_temp_and_humidity(&TEMP, &HUMID);
   
+  // Display Temp and Humidity
   lcd.setCursor(0, 0);
   char buf[17];
   snprintf(buf, 17, "TEMP: %d C", TEMP);
@@ -193,9 +197,11 @@ void idle() {
   snprintf(buf, 17, "RH: %d %%", HUMID);
   lcd.print(buf);
 
+  // Transition to RUNNING if hot enough
   if (TEMP > T_THRESHOLD)
     C_STATE = RUNNING;
 
+  // Transition to ERROR if not enough water
   if (adc_read(0) > W_THRESHOLD) return;
 
   C_STATE = ERROR;
@@ -246,6 +252,7 @@ void running() {
 
   get_temp_and_humidity(&TEMP, &HUMID);
 
+  // Display Temp and Humidity
   lcd.setCursor(0, 0);
   char buf[17];
   snprintf(buf, 17, "TEMP: %d C", TEMP);
@@ -255,9 +262,11 @@ void running() {
   snprintf(buf, 17, "RH: %d %%", HUMID);
   lcd.print(buf);
 
+  // Transition to RUNNING if hot enough
   if (TEMP <= T_THRESHOLD)
     C_STATE = IDLE;
 
+  // Transition to ERROR if not enough water
   if (adc_read(0) > W_THRESHOLD) return;
 
   C_STATE = ERROR;
@@ -267,6 +276,7 @@ void running() {
 void adjust_vent() {
   myStepper.setSpeed(10);
 
+  // Rotate clockwise, otherwise counter
   if (read_pin(pin_l, 4) && !(read_pin(pin_l, 5))) {
     myStepper.step(stepsPerRevolution/4);
     VENT_ANGLE = (VENT_ANGLE + 90) % 360;
@@ -319,6 +329,7 @@ void print_angle() {
 }
 
 void get_temp_and_humidity(int* temp, int* humidity) {
+  // Delay for minute
   if (millis() >= time_now + PERIOD) {
     time_now += PERIOD;
     dht11.readTemperatureHumidity(*temp, *humidity);
@@ -327,6 +338,7 @@ void get_temp_and_humidity(int* temp, int* humidity) {
 
 // Reset
 void reset() {
+  // Allow reset if enough water
   if (adc_read(0) > W_THRESHOLD && read_pin(pin_l, 7)) {
     C_STATE = IDLE;
   }
