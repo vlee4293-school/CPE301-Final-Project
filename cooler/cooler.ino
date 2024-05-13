@@ -212,7 +212,7 @@ void error() {
     P_STATE = C_STATE;
     lcd.clear();
     lcd.setCursor(0, 0);
-    lcd.print("ERROR");
+    lcd.print("WATER LOW");
 
     // Solo Red LED
     write_port(port_a, 0, LOW);
